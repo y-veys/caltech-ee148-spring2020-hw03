@@ -6,9 +6,12 @@ import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 import matplotlib.pyplot as plt
+import random
 from torchvision import datasets, transforms
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data.sampler import SubsetRandomSampler
+from sklearn.manifold import TSNE
+from sklearn.metrics import confusion_matrix
 
 import os
 
@@ -87,12 +90,12 @@ class Net(nn.Module):
         super(Net, self).__init__()
 
         self.model = nn.Sequential(
-                nn.Conv2d(1, 8, kernel_size=(3,3)),
+                nn.Conv2d(1, 9, kernel_size=(3,3)),
                 nn.ReLU(),
                 nn.MaxPool2d(2),
                 nn.Dropout(p=0.2),
 
-                nn.Conv2d(8, 16, kernel_size=(3,3)),
+                nn.Conv2d(9, 16, kernel_size=(3,3)),
                 nn.ReLU(),
                 nn.MaxPool2d(2),
                 nn.Dropout(p=0.2),
@@ -134,14 +137,28 @@ def test(model, device, test_loader):
     test_loss = 0
     correct = 0
     test_num = 0
+    inc_predictions = []
     with torch.no_grad():   # For the inference step, gradient is not computed
         for data, target in test_loader:
             data, target = data.to(device), target.to(device)
             output = model(data)
             test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
             pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
-            correct += pred.eq(target.view_as(pred)).sum().item()
+            correct += pred.eq(target.view_as(pred)).sum().item() 
             test_num += len(data)
+            
+            # inc_indices = np.where(pred.eq(target.view_as(pred))==False)[0]
+            # for ind in inc_indices:
+            #     inc_data = data[ind].detach().numpy().squeeze()
+            #     inc_pred = pred[ind].squeeze().numpy()
+
+            #     inc_predictions.append((inc_data, inc_pred))
+
+            # plt.imshow(confusion_matrix(target, pred)/10000)
+            # plt.title("Normalized Confusion Matrix")
+            # plt.xlabel("Predicted Value")
+            # plt.ylabel("True Value")
+            # plt.show()
 
     test_loss /= test_num
 
@@ -149,7 +166,100 @@ def test(model, device, test_loader):
         test_loss, correct, test_num,
         100. * correct / test_num))
 
+    #show_mistakes(inc_predictions)
+
     return test_loss
+
+def show_kernels(model):
+
+    fig, axes = plt.subplots(3,3)
+    fig.suptitle("Kernels of First Layer")
+
+    i = 0 
+    for ax in axes.flat:
+            kernel = model.model[0].weight.detach().numpy().squeeze()[i]
+            im = ax.imshow(kernel)
+
+            i += 1
+
+    plt.colorbar(im, ax=axes.ravel().tolist())
+    plt.show()
+
+def show_mistakes(inc_predictions):
+
+    fig, axes = plt.subplots(3,3)
+    fig.suptitle("Nine Examples Classifier Got Incorrect")
+
+    i = 0 
+    for ax in axes.flat:
+            im = ax.imshow(inc_predictions[i][0], cmap='gray')
+            title = 'Predicted Value: ' + str(inc_predictions[i][1])
+            ax.set_title(title, fontsize=9)
+
+            i += 1
+
+    plt.show()
+
+
+def feature_vector(model, device, test_loader):
+    model.eval()    # Set the model to inference mode
+    with torch.no_grad():   # For the inference step, gradient is not computed
+        for data, target in test_loader:
+            data, target = data.to(device), target.to(device)
+            output = model.model[0](data)
+
+            for i in range(1,10):
+                output = model.model[i](output)
+
+            output = output.detach().numpy().squeeze()
+            X_2d = TSNE(n_components=2).fit_transform(output)
+
+        plt.scatter(X_2d[:,0], X_2d[:,1], c=target, cmap=plt.cm.get_cmap("jet", 10),s=1)
+        plt.colorbar(ticks=range(10))
+        plt.clim(-0.5, 9.5)
+        plt.title('High Dimensional Feature Embedding using tSNE')
+        plt.show()
+
+def find_nearest_vectors(model, device, test_loader):
+    outputs = []
+    model.eval()    # Set the model to inference mode
+    with torch.no_grad():   # For the inference step, gradient is not computed
+        for data, target in test_loader:
+            data, target = data.to(device), target.to(device)
+            output = model.model[0](data)
+
+            for i in range(1,10):
+                output = model.model[i](output)
+
+            output = output.detach().numpy().squeeze()
+            outputs.append(output)
+
+    indices = random.sample(range(10000), 8)
+    images = []
+
+    for i in indices: 
+        image = data[i].detach().numpy().squeeze()
+        true = target[i].squeeze().numpy()
+        vector = outputs[0][i]
+
+        distances = []
+        for output in outputs[0]: 
+            distances.append(np.linalg.norm(vector-output))
+
+        min_8_indices = np.argpartition(np.array(distances),8)[:8]
+        for j in min_8_indices: 
+            images.append(data[j].detach().numpy().squeeze())
+
+
+    fig, axes = plt.subplots(8,8)
+    fig.suptitle("Images with Similar Feature Vectors")
+
+    i = 0 
+    for ax in axes.flat:
+            im = ax.imshow(images[i], cmap='gray')
+            i += 1
+
+    plt.show()
 
 
 def main():
@@ -158,7 +268,7 @@ def main():
     parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
     parser.add_argument('--batch-size', type=int, default=64, metavar='N',
                         help='input batch size for training (default: 64)')
-    parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
+    parser.add_argument('--test-batch-size', type=int, default=10000, metavar='N',
                         help='input batch size for testing (default: 1000)')
     parser.add_argument('--epochs', type=int, default=14, metavar='N',
                         help='number of epochs to train (default: 14)')
@@ -186,6 +296,7 @@ def main():
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
     torch.manual_seed(args.seed)
+    np.random.seed(1)
 
     device = torch.device("cuda" if use_cuda else "cpu")
 
@@ -209,6 +320,11 @@ def main():
             test_dataset, batch_size=args.test_batch_size, shuffle=True, **kwargs)
 
         test(model, device, test_loader)
+
+        # Extra Visualization - Do with batch size = 10000 for ease 
+        # show_kernels(model)
+        # feature_vector(model, device, test_loader)
+        # find_nearest_vectors(model, device, test_loader)
 
         return
 
@@ -277,10 +393,10 @@ def main():
         # You may optionally save your model at each epoch here
 
     if args.save_model:
-       torch.save(model.state_dict(), "model_best.pt")
+       torch.save(model.state_dict(), "model_best_9_kernels.pt")
 
-    print(train_loss)
-    print(val_loss)
+    #print(train_loss)
+    #print(val_loss)
     epoch_list = np.linspace(1,args.epochs,args.epochs)
     plt.figure()
     plt.plot(epoch_list, train_loss)
