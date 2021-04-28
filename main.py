@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import numpy as np
+import matplotlib.pyplot as plt
 from torchvision import datasets, transforms
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data.sampler import SubsetRandomSampler
@@ -84,8 +86,28 @@ class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
 
+        self.model = nn.Sequential(
+                nn.Conv2d(1, 8, kernel_size=(3,3)),
+                nn.ReLU(),
+                nn.MaxPool2d(2),
+                nn.Dropout(p=0.2),
+
+                nn.Conv2d(8, 16, kernel_size=(3,3)),
+                nn.ReLU(),
+                nn.MaxPool2d(2),
+                nn.Dropout(p=0.2),
+
+                nn.Flatten(),
+                nn.Linear(400, 64),
+                nn.ReLU(),
+                nn.Linear(64, 10)
+        )
+
     def forward(self, x):
-        return x
+        x = self.model(x)
+
+        output = F.log_softmax(x, dim=1)
+        return output
 
 
 def train(args, model, device, train_loader, optimizer, epoch):
@@ -126,6 +148,8 @@ def test(model, device, test_loader):
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
         test_loss, correct, test_num,
         100. * correct / test_num))
+
+    return test_loss
 
 
 def main():
@@ -172,7 +196,7 @@ def main():
         assert os.path.exists(args.load_model)
 
         # Set the test model
-        model = fcNet().to(device)
+        model =  Net().to(device)
         model.load_state_dict(torch.load(args.load_model))
 
         test_dataset = datasets.MNIST('../data', train=False,
@@ -190,17 +214,38 @@ def main():
 
     # Pytorch has default MNIST dataloader which loads data at each iteration
     train_dataset = datasets.MNIST('../data', train=True, download=True,
-                transform=transforms.Compose([       # Data preprocessing
-                    transforms.ToTensor(),           # Add data augmentation here
-                    transforms.Normalize((0.1307,), (0.3081,))
+                transform=transforms.Compose([
+                    transforms.RandomHorizontalFlip(),
+                    transforms.ToTensor(),
+                    transforms.Normalize((0.1307,), (0.3081,)),
+                    #transforms.RandomAffine(degrees=10,translate=(0.03,0.03),
+                    #                             scale=(0.75,1.5))
                 ]))
+
 
     # You can assign indices for training/validation or use a random subset for
     # training by using SubsetRandomSampler. Right now the train and validation
     # sets are built from the same indices - this is bad! Change it so that
     # the training and validation sets are disjoint and have the correct relative sizes.
-    subset_indices_train = range(len(train_dataset))
-    subset_indices_valid = range(len(train_dataset))
+    targets = train_dataset.targets.numpy()
+
+    subset_indices_train = []
+    subset_indices_valid = []
+
+    for i in range(10):
+        # Location of classes, shuffled 
+        ind_locs = np.ndarray.tolist(np.random.permutation(np.where(targets==i)[0]))
+
+        # Sample 85% of the locations for training
+        split_index = round(0.85*len(ind_locs))
+
+        # Append to the training and validation sets 
+        subset_indices_train += ind_locs[0:split_index]
+        subset_indices_valid += ind_locs[split_index:]
+
+    # subset_indices_train = np.random.permutation(subset_indices_train)
+    # split_index = round(len(subset_indices_train)/16)
+    # subset_indices_train = subset_indices_train[0:split_index]
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size,
@@ -212,7 +257,7 @@ def main():
     )
 
     # Load your model [fcNet, ConvNet, Net]
-    model = ConvNet().to(device)
+    model = Net().to(device)
 
     # Try different optimzers here [Adam, SGD, RMSprop]
     optimizer = optim.Adadelta(model.parameters(), lr=args.lr)
@@ -220,16 +265,31 @@ def main():
     # Set your learning rate scheduler
     scheduler = StepLR(optimizer, step_size=args.step, gamma=args.gamma)
 
+    train_loss = []
+    val_loss = []
     # Training loop
     for epoch in range(1, args.epochs + 1):
         train(args, model, device, train_loader, optimizer, epoch)
-        test(model, device, val_loader)
+        train_loss.append(test(model, device, train_loader))
+        val_loss.append(test(model, device, val_loader))
         scheduler.step()    # learning rate scheduler
 
         # You may optionally save your model at each epoch here
 
     if args.save_model:
-        torch.save(model.state_dict(), "mnist_model.pt")
+       torch.save(model.state_dict(), "model_best.pt")
+
+    print(train_loss)
+    print(val_loss)
+    epoch_list = np.linspace(1,args.epochs,args.epochs)
+    plt.figure()
+    plt.plot(epoch_list, train_loss)
+    plt.plot(epoch_list, val_loss)
+    plt.title("Training vs. Validation Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Average Loss")
+    plt.legend(["Training Loss","Validation Loss"])
+    plt.show()
 
 
 if __name__ == '__main__':
